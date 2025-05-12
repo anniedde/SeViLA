@@ -1013,3 +1013,91 @@ class SeViLA(Blip2Base):
            model.load_qformer_loc()
 
         return model
+
+    @torch.no_grad()
+    def generate_frame_indices(self,
+        video,
+        text_input_qa,
+        text_input_loc,
+        keyframe_num,
+        qid='demo',
+        use_nucleus_sampling=False,
+        num_beams=5, max_length=30,
+        min_length=1, top_p=0.9,
+        repetition_penalty=1.0, length_penalty=1.0,
+        num_captions=1, temperature=1,):
+        """
+        Args:
+            samples (dict): A dictionary containing the following keys:
+                - image (torch.Tensor): A tensor of shape (batch_size, 3, H, W)
+            use_nucleus_sampling (bool): Whether to use nucleus sampling. If False, use top-k sampling.
+            num_beams (int): Number of beams for beam search. 1 means no beam search.
+            max_length (int): The maximum length of the sequence to be generated.
+            min_length (int): The minimum length of the sequence to be generated.
+            top_p (float): The cumulative probability for nucleus sampling.
+            repetition_penalty (float): The parameter for repetition penalty. 1.0 means no penalty.
+            num_captions (int): Number of captions to be generated for each image.
+        """
+        out = {}
+        image, qid = video, qid
+        text_input_qa, answer = text_input_qa, 0
+        
+        # inference with localizer             
+            
+        b, t, c, w, h = image.shape        
+        image = image.reshape(-1, c, w, h)
+        with torch.cuda.amp.autocast(enabled=(self.device != torch.device("cpu"))):
+            image_embeds = self.visual_encoder(image) # bt, n, c
+                
+        _, n, _ = image_embeds.shape
+        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(image.device) # bt n c
+        image_embeds_, image_atts_ = image_embeds.detach().clone(), image_atts.detach().clone()
+        image_embeds_ = self.ln_vision_loc(image_embeds_)
+            
+        text_input_loc = text_input_loc # Q + Prompt: Is this a good frame can answer the question?
+        query_tokens_loc = self.query_tokens_loc.expand(image_embeds_.shape[0], -1, -1)
+        query_output_loc = self.Qformer_loc.bert(
+            query_embeds=query_tokens_loc, encoder_hidden_states=image_embeds_,
+            encoder_attention_mask=image_atts_, return_dict=True)
+        inputs_t5_loc = self.t5_proj_loc(query_output_loc.last_hidden_state)
+
+        atts_t5_loc = torch.ones(inputs_t5_loc.size()[:-1], dtype=torch.long).to(image.device)
+        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+
+            frame_prefix = self.t5_tokenizer(
+                self.frame_prefix, padding="longest", add_special_tokens=False,
+                truncation=True, max_length=self.max_txt_len, return_tensors="pt").to(image.device) # 
+                #print('frame_prefix 1', frame_prefix.input_ids.shape) 8, 4
+            frame_prefix_id = torch.repeat_interleave(frame_prefix.input_ids, b*t, 0)
+            frame_prefix_mask = torch.repeat_interleave(frame_prefix.attention_mask, b*t, 0)
+            frame_predix_embed = self.t5_model.encoder.embed_tokens(frame_prefix_id)
+            input_tokens_loc = self.t5_tokenizer(
+                text_input_loc, padding="longest", truncation=True,
+                max_length=self.max_txt_len, return_tensors="pt").to(image.device)
+                #print('input_ids_loc.input_ids', input_tokens_loc.input_ids)
+            input_ids_loc = torch.repeat_interleave(input_tokens_loc.input_ids, t, 0)
+                #print('input_ids_loc', input_ids_loc)
+            input_attention_mask_loc = torch.repeat_interleave(input_tokens_loc.attention_mask, t, 0)
+            inputs_embeds_loc = self.t5_model.encoder.embed_tokens(input_ids_loc)              
+            inputs_embeds_loc = torch.cat([frame_predix_embed, inputs_t5_loc, inputs_embeds_loc], dim=1)
+            encoder_atts_loc = torch.cat([frame_prefix_mask, atts_t5_loc, input_attention_mask_loc], dim=1)
+    
+            outputs_loc = self.t5_model.generate(
+                inputs_embeds=inputs_embeds_loc, attention_mask=encoder_atts_loc,
+                do_sample=use_nucleus_sampling, top_p=top_p, temperature=temperature, num_beams=1,
+                max_new_tokens=max_length, min_length=min_length, repetition_penalty=repetition_penalty,
+                length_penalty=length_penalty, num_return_sequences=num_captions,
+                return_dict_in_generate=True, output_hidden_states=True, output_scores=True)
+                        
+            pred_logits_loc = outputs_loc.scores[0]
+            loc_yes = pred_logits_loc[:, self.yes_id]
+            loc_yes = loc_yes.reshape(b, -1)
+            if 'qa_vid' in self.task:
+                select_frames_idx = torch.topk(loc_yes, keyframe_num, dim=-1).indices.tolist()
+                sorted_frames_idx = []
+                image_embeds = self.ln_vision(image_embeds)
+                image_embeds = image_embeds.reshape(b, t, n, -1)
+                for frames in select_frames_idx:
+                    sorted_frames_idx.append(sorted(frames))
+                out['frame_idx'] = sorted_frames_idx
+        return out

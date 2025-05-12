@@ -114,8 +114,6 @@ def load_video_demo(video_path, n_frms=MAX_INT, height=-1, width=-1, sampling="u
     # get_batch -> T, H, W, C
     
     frms = vr.get_batch(indices)
-    frms = frms.asnumpy()
-    frms = torch.from_numpy(frms)
     frms = frms.permute(3, 0, 1, 2).float()  # (C, T, H, W)
 
     return frms, indices, fps, vlen

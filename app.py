@@ -8,6 +8,8 @@ from lavis.processors.blip_processors import ToUint8, ToTHWC
 from lavis.models.sevila_models.sevila import SeViLA
 from typing import Optional
 import warnings
+
+os.environ["TRANSFORMERS_CACHE"] = "/playpen-nas-ssd4/awang/SeViLA/cache/"
 # model config
 img_size = 224
 num_query_token = 32
@@ -62,6 +64,7 @@ def sevila_demo(video,
     option1, option2, option3, 
     video_frame_num, 
     keyframe_num):
+    print('Starting SeViLA demo...')
     
     if torch.cuda.is_available():
         device = 0
@@ -182,8 +185,7 @@ with gr.Blocks(title="SeViLA demo") as demo:
         gen_btn.click(
             sevila_demo,
             inputs=[video, question, option1, option2, option3, video_frame_num, keyframe_num],
-            outputs=[keyframes, timestamps, answer],
-            queue=True
+            outputs=[keyframes, timestamps, answer]
         )
         #demo = gr.Interface(sevila_demo,
         #     inputs=[gr.Video(), question, option1, option2, option3, video_frame_num, keyframe_num, device],
@@ -192,15 +194,5 @@ with gr.Blocks(title="SeViLA demo") as demo:
         #               ['videos/demo2.mp4', 'What did both of them do after completing skiing?', 'jump and pose.' , 'bend down.','raised their hands.', 32, 4, 0],
         #               ['videos/demo3.mp4', 'What room was Wilson breaking into when House found him?', 'the kitchen.' , 'the dining room.','the bathroom.', 32, 4, 0]]
         #     )
-    with gr.Column():
-        gr.Examples(
-            inputs=[video, question, option1, option2, option3, video_frame_num, keyframe_num],
-            outputs=[keyframes, timestamps, answer],
-            fn=sevila_demo,
-            examples=[['videos/demo1.mp4', 'Why did the two ladies put their hands above their eyes while staring out?', 'practicing cheer', 'to place wreaths', 'to see better', 32, 4],
-                      ['videos/demo2.mp4', 'What did both of them do after completing skiing?', 'jump and pose' , 'bend down','raised their hands', 32, 4],
-                      ['videos/demo3.mp4', 'What room was Wilson breaking into when House found him?', 'the bedroom' , 'the bathroom','the kitchen', 32, 4]],
-            cache_examples=False,
-        )
-demo.queue(concurrency_count=1, api_open=False)          
-demo.launch(share=False) 
+    
+demo.launch(share=True) 
